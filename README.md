@@ -114,8 +114,8 @@ The application is designed with a clear separation of concerns:
 
 ## 🎥 Demo
 
-- Loom Video: <your-loom-link>  
-- (Optional) Live Demo: <your-vercel-link>
+- Loom Video: https://www.loom.com/share/789ce901e4d24c0d85365c454ae4161a
+- Live Demo: https://spreadsheet-app-workelate.vercel.app/
 
 ---
 
