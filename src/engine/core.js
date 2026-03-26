@@ -184,12 +184,6 @@ function tokenize(expression) {
             continue
         }
 
-        if (char === ':') {
-            tokens.push({ type: 'range', value: ':' })
-            position++
-            continue
-        }
-
         if ((char >= '0' && char <= '9') || char === '.') {
             let numberStr = ''
             while (position < expression.length && ((expression[position] >= '0' && expression[position] <= '9') || expression[position] === '.')) {
@@ -206,15 +200,31 @@ function tokenize(expression) {
                 identifier += expression[position].toUpperCase()
                 position++
             }
+            // If this is the start of a range (e.g., A1:A5), parse the whole range as a single token.
+            // This avoids the parser needing lookahead to combine "A1 : A5".
             if (position < expression.length && expression[position] === ':') {
-                tokens.push({ type: 'cell', value: identifier })
+                position++ // consume ':'
+
+                let identifier2 = ''
+                while (
+                    position < expression.length &&
+                    ((expression[position] >= 'A' && expression[position] <= 'Z') ||
+                        (expression[position] >= 'a' && expression[position] <= 'z') ||
+                        (expression[position] >= '0' && expression[position] <= '9'))
+                ) {
+                    identifier2 += expression[position].toUpperCase()
+                    position++
+                }
+
+                const cellMatch1 = identifier.match(/^([A-Z]+)(\d+)$/)
+                const cellMatch2 = identifier2.match(/^([A-Z]+)(\d+)$/)
+                if (!cellMatch1 || !cellMatch2) throw new Error('REF')
+
+                tokens.push({ type: 'range', start: identifier, end: identifier2 })
             } else {
                 const cellMatch = identifier.match(/^([A-Z]+)(\d+)$/)
-                if (cellMatch) {
-                    tokens.push({ type: 'cell', value: identifier })
-                } else {
-                    tokens.push({ type: 'function', value: identifier })
-                }
+                if (cellMatch) tokens.push({ type: 'cell', value: identifier })
+                else tokens.push({ type: 'function', value: identifier })
             }
             continue
         }
@@ -274,13 +284,8 @@ function parseTokensToAST(tokens) {
             }
             position++
         } else if (token.type === 'range') {
-            if (outputQueue.length < 2) throw new Error('Invalid range syntax')
-            const endCell = outputQueue.pop()
-            const startCell = outputQueue.pop()
-            if (startCell.type !== 'cell' || endCell.type !== 'cell') {
-                throw new Error('Range must be between two cell references')
-            }
-            outputQueue.push({ type: 'range', start: startCell.value, end: endCell.value })
+            // Ranges are already fully tokenized as {start,end}.
+            outputQueue.push(token)
             position++
         } else {
             position++
@@ -369,14 +374,26 @@ function evaluateAST(ast, getCellValue, visited = new Set()) {
     if (ast.type === 'binary') {
         const leftVal = evaluateAST(ast.left, getCellValue, visited)
         const rightVal = evaluateAST(ast.right, getCellValue, visited)
-        if (typeof leftVal !== 'number' || typeof rightVal !== 'number') throw new Error('VALUE')
+        if (leftVal === 'ERROR' || rightVal === 'ERROR') throw new Error('VALUE')
+
+        // Empty cells (and non-numeric text) are treated as 0 for arithmetic.
+        // This matches the "empty cells treat as 0" requirement.
+        const leftNum = typeof leftVal === 'number'
+            ? leftVal
+            : (leftVal === '' ? 0 : parseFloat(leftVal))
+        const rightNum = typeof rightVal === 'number'
+            ? rightVal
+            : (rightVal === '' ? 0 : parseFloat(rightVal))
+
+        const l = Number.isNaN(leftNum) ? 0 : leftNum
+        const r = Number.isNaN(rightNum) ? 0 : rightNum
         switch (ast.operator) {
-            case '+': return leftVal + rightVal
-            case '-': return leftVal - rightVal
-            case '*': return leftVal * rightVal
+            case '+': return l + r
+            case '-': return l - r
+            case '*': return l * r
             case '/':
-                if (rightVal === 0) throw new Error('VALUE')
-                return leftVal / rightVal
+                if (r === 0) throw new Error('VALUE')
+                return l / r
             default: throw new Error('VALUE')
         }
     }
@@ -416,11 +433,10 @@ function evaluateFormula(expression, getCellValue) {
         const ast = parseTokensToAST(tokens)
         const result = evaluateAST(ast, getCellValue)
         return { value: result, error: null }
-    } catch (error) {
-        if (error.message === 'CIRCULAR') return { value: null, error: '#CYCLE!' }
-        if (error.message === 'REF') return { value: null, error: '#REF!' }
-        if (error.message === 'VALUE') return { value: null, error: '#VALUE!' }
-        return { value: null, error: '#PARSE!' }
+    } catch {
+        // Keep formula evaluation safe and deterministic: any failure becomes ERROR.
+        // (CIRCULAR, REF, VALUE, PARSE, etc.)
+        return { value: null, error: 'ERROR' }
     }
 }
 
@@ -457,14 +473,29 @@ function shiftCellReferences(formula, rowShift, colShift, atIndex, isColumnOpera
 
 function extractCellReferences(formula) {
     const references = new Set()
-    // Extract cell references using regex
-    // Note: This regex matches cell references like A1, B2, AA10, etc.
-    // It does NOT extract individual cells from ranges (e.g., A1:A5 only extracts A1 and A5)
-    const regex = /([A-Z]+\d+)/g
-    let match
-    while ((match = regex.exec(formula)) !== null) {
-        references.add(match[1])
+    if (!formula) return references
+
+    // 1) Expand ranges (e.g., A1:A5 -> A1..A5)
+    const rangeRegex = /([A-Z]+\d+):([A-Z]+\d+)/g
+    let rangeMatch
+    while ((rangeMatch = rangeRegex.exec(formula)) !== null) {
+        const start = rangeMatch[1]
+        const end = rangeMatch[2]
+        try {
+            for (const key of expandCellRange(start, end)) references.add(key)
+        } catch {
+            // Ignore malformed ranges; they'll be handled by formula parsing.
+        }
     }
+
+    // 2) Add all individual cell references.
+    // Endpoints within ranges are duplicated, but the Set de-dupes.
+    const cellRegex = /([A-Z]+\d+)/g
+    let cellMatch
+    while ((cellMatch = cellRegex.exec(formula)) !== null) {
+        references.add(cellMatch[1])
+    }
+
     return references
 }
 
@@ -527,7 +558,8 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     // ── Value resolution ──
 
     function resolveCellValue(cellKey, visited = new Set()) {
-        if (visited.has(cellKey)) return '#CYCLE!'
+        // If a cycle is detected while resolving dependencies, surface it as ERROR.
+        if (visited.has(cellKey)) throw new Error('CIRCULAR')
         visited.add(cellKey)
 
         if (computedCache.has(cellKey)) {
@@ -615,12 +647,6 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         if (raw.startsWith('=')) {
             cells.set(key, { raw, computed: null, error: null })
             updateDependencies(key, raw)
-            if (graph.hasCycle(key)) {
-                graph.removeAllDependencies(key)
-                cells.set(key, { raw, computed: null, error: '#CYCLE!' })
-                markCellDirty(key)
-                return
-            }
         } else {
             cells.set(key, { raw, computed: null, error: null })
         }
@@ -666,6 +692,72 @@ export function createEngine(initialRows = 50, initialCols = 50) {
             if (value.raw && value.raw.startsWith('=')) updateDependencies(key, value.raw)
         }
         markAllCellsDirty()
+    }
+
+    // ── Persistence (serialization) ──
+
+    function serializeState() {
+        const out = {
+            rows,
+            cols,
+            cells: {}
+        }
+        for (const [key, cell] of cells.entries()) {
+            const raw = cell.raw ?? ''
+            if (typeof raw !== 'string') continue
+            if (raw.startsWith('=')) {
+                out.cells[key] = { value: '', formula: raw }
+            } else {
+                out.cells[key] = { value: raw, formula: null }
+            }
+        }
+        return out
+    }
+
+    function importState(state) {
+        if (!state || typeof state !== 'object') throw new Error('INVALID_STATE')
+        const nextRows = Number.isInteger(state.rows) ? state.rows : rows
+        const nextCols = Number.isInteger(state.cols) ? state.cols : cols
+        if (!Number.isFinite(nextRows) || !Number.isFinite(nextCols) || nextRows < 1 || nextCols < 1) {
+            throw new Error('INVALID_GRID')
+        }
+
+        rows = nextRows
+        cols = nextCols
+
+        // Reset all engine state (undo history is intentionally not restored).
+        cells.clear()
+        graph.clear()
+        computedCache.clear()
+        dirtyCells.clear()
+        undoStack.length = 0
+        redoStack.length = 0
+        _generation++
+
+        const cellsObj = state.cells && typeof state.cells === 'object' ? state.cells : {}
+        for (const [key, cellData] of Object.entries(cellsObj)) {
+            const coords = cellCoords(key)
+            if (!coords) continue
+            if (!isValidCellKey(key)) continue
+
+            const formula = cellData?.formula
+            const value = cellData?.value
+
+            const raw = (typeof formula === 'string' && formula.startsWith('=')) ? formula
+                : (typeof value === 'string' ? value : '')
+
+            if (!raw || raw.trim() === '') continue
+
+            if (raw.startsWith('=')) {
+                cells.set(key, { raw, computed: null, error: null })
+                updateDependencies(key, raw)
+            } else {
+                cells.set(key, { raw, computed: null, error: null })
+            }
+        }
+
+        markAllCellsDirty()
+        recalculate()
     }
 
     // ── Row / Column structural operations ──
@@ -792,6 +884,24 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         recalculate()
     }
 
+    function executeSetCellsBatch(changes) {
+        if (!Array.isArray(changes) || changes.length === 0) return
+
+        // Filter no-ops to keep undo/redo clean.
+        const actualChanges = changes.filter(({ r, c, value }) => getCellRaw(r, c).raw !== value)
+        if (actualChanges.length === 0) return
+
+        const snapshot = takeSnapshot()
+        pushToUndoStack({ type: 'batchset', snap: snapshot })
+
+        for (const { r, c, value } of actualChanges) {
+            setCellRaw(r, c, value)
+        }
+
+        _generation++
+        recalculate()
+    }
+
     function executeInsertRow(atIndex) {
         const snapshot = takeSnapshot()
         const previousRows = rows
@@ -836,21 +946,34 @@ export function createEngine(initialRows = 50, initialCols = 50) {
             _generation++
             recalculate()
         } else {
-            // For structural changes (row/col insert/delete), save current state to redo
-            // and restore the snapshot from undo entry
-            // Note: The snapshot contains the cell data, but rows/cols must be restored separately
-            redoStack.push({
-                ...entry,
-                restoreSnap: takeSnapshot(),
-                restoreRows: rows,
-                restoreCols: cols
-            })
-            restoreSnapshot(entry.snap)
-            // Restore grid dimensions - this must happen after restoreSnapshot
-            // because restoreSnapshot increments _generation but doesn't modify rows/cols
-            if (entry.type === 'rowins' || entry.type === 'rowdel') rows = entry.oldRows
-            else if (entry.type === 'colins' || entry.type === 'coldel') cols = entry.oldCols
-            recalculate()
+            if (entry.type === 'batchset') {
+                redoStack.push({
+                    ...entry,
+                    restoreSnap: takeSnapshot(),
+                    restoreRows: rows,
+                    restoreCols: cols
+                })
+                restoreSnapshot(entry.snap)
+                // restoreSnapshot increments _generation but doesn't change grid size.
+                // rows/cols are still the same.
+                recalculate()
+            } else {
+                // For structural changes (row/col insert/delete), save current state to redo
+                // and restore the snapshot from undo entry
+                // Note: The snapshot contains the cell data, but rows/cols must be restored separately
+                redoStack.push({
+                    ...entry,
+                    restoreSnap: takeSnapshot(),
+                    restoreRows: rows,
+                    restoreCols: cols
+                })
+                restoreSnapshot(entry.snap)
+                // Restore grid dimensions - this must happen after restoreSnapshot
+                // because restoreSnapshot increments _generation but doesn't modify rows/cols
+                if (entry.type === 'rowins' || entry.type === 'rowdel') rows = entry.oldRows
+                else if (entry.type === 'colins' || entry.type === 'coldel') cols = entry.oldCols
+                recalculate()
+            }
         }
         return true
     }
@@ -866,16 +989,29 @@ export function createEngine(initialRows = 50, initialCols = 50) {
             _generation++
             recalculate()
         } else {
-            undoStack.push({
-                ...entry,
-                snap: takeSnapshot(),
-                oldRows: rows,
-                oldCols: cols
-            })
-            restoreSnapshot(entry.restoreSnap)
-            rows = entry.restoreRows
-            cols = entry.restoreCols
-            recalculate()
+            if (entry.type === 'batchset') {
+                undoStack.push({
+                    ...entry,
+                    snap: takeSnapshot(),
+                    oldRows: rows,
+                    oldCols: cols
+                })
+                restoreSnapshot(entry.restoreSnap)
+                rows = entry.restoreRows
+                cols = entry.restoreCols
+                recalculate()
+            } else {
+                undoStack.push({
+                    ...entry,
+                    snap: takeSnapshot(),
+                    oldRows: rows,
+                    oldCols: cols
+                })
+                restoreSnapshot(entry.restoreSnap)
+                rows = entry.restoreRows
+                cols = entry.restoreCols
+                recalculate()
+            }
         }
         return true
     }
@@ -890,7 +1026,7 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         const value = resolveCellValue(key)
 
         // Error values are strings starting with '#' (e.g., '#CYCLE!', '#VALUE!')
-        if (typeof value === 'string' && value.startsWith('#')) {
+        if (value === 'ERROR' || (typeof value === 'string' && value.startsWith('#'))) {
             return { raw: cell.raw, computed: null, error: value }
         }
         // Return the computed value (which may be a number or string)
@@ -908,10 +1044,13 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         get cols() { return cols },
         getCell: getCellForDisplay,
         setCell: executeSetCell,
+        setCellsBatch: executeSetCellsBatch,
         insertRow: executeInsertRow,
         deleteRow: executeDeleteRow,
         insertColumn: executeInsertColumn,
         deleteColumn: executeDeleteColumn,
+        serializeState,
+        importState,
         undo,
         redo,
         canUndo: () => undoStack.length > 0,

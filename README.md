@@ -1,6 +1,11 @@
 # SpreadsheetApp
 
-A modern web application built with React and Vite for creating and managing spreadsheets.
+A lightweight Excel-like spreadsheet built with React + Vite.
+
+This project was implemented as an assignment with three core deliverables:
+- **Column Sort & Filter** (view-layer only, computed-value aware)
+- **Multi-cell Copy & Paste** (clipboard integration, undoable)
+- **Local Storage Persistence** (debounced autosave, safe restore)
 
 ## Prerequisites
 
@@ -11,13 +16,6 @@ Before you begin, ensure you have the following installed on your system:
 - **Git** - [Download](https://git-scm.com/)
 
 ## Getting Started
-
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/tauhidst07/spreadhsheet.git
-cd SpreadsheetApp
-```
 
 ### 2. Install Dependencies
 
@@ -69,60 +67,7 @@ Run ESLint to check for code quality issues:
 npm run lint
 ```
 
-## Project Structure
 
-```
-SpreadsheetApp/
-├── src/
-│   ├── App.jsx           # Main React component
-│   ├── App.css           # Application styles
-│   ├── main.jsx          # Application entry point
-│   ├── index.css         # Global styles
-│   ├── assets/           # Static assets (images, icons, etc.)
-│   └── engine/           # Core application logic
-│       └── core.js       # Engine core functionality
-├── public/               # Static files served as-is
-├── package.json          # Project dependencies and scripts
-├── vite.config.js        # Vite configuration
-├── eslint.config.js      # ESLint configuration
-├── index.html            # HTML entry point
-└── README.md             # This file
-```
-
-## Technologies Used
-
-- **React** - A JavaScript library for building user interfaces
-- **Vite** - A next-generation frontend build tool
-- **ESLint** - JavaScript linting utility
-- **CSS** - Styling and layout
-
-## Available Scripts
-
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start the development server with hot reload |
-| `npm run build` | Build the application for production |
-| `npm run preview` | Preview the production build locally |
-| `npm run lint` | Run ESLint to check code quality |
-
-## Development Workflow
-
-1. Create a new branch for your feature:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-2. Make your changes and ensure the code passes linting:
-   ```bash
-   npm run lint
-   ```
-
-3. Commit your changes:
-   ```bash
-   git commit -m "Add description of your changes"
-   ```
-
-4. Push to your fork and create a Pull Request
 
 ## Browser Support
 
@@ -147,7 +92,3 @@ This application works on all modern browsers that support ES2020+ JavaScript:
 - Ensure all dependencies are installed: `npm install`
 - Clear any build cache: `rm -rf dist`
 - Try rebuilding: `npm run build`
-
-
-
-# task_AI_native_Office_intern
